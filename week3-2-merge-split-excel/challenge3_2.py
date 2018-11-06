@@ -1,6 +1,5 @@
 import datetime
-from openpyxl import load_workbook
-from openpyxl import Workbook
+from openpyxl import load_workbook, Workbook
 
 # 读取文件以及相应的表
 wb = load_workbook('courses.xlsx')
@@ -43,13 +42,15 @@ def split():
         wb_temp.remove(wb_temp.active)
         # 创建相应年份命名的表
         ws = wb_temp.create_sheet(title=name)
+        ws.append(['创建时间', '课程名称', '学习人数', '学习时间'])
         # 写入相应年份的数据
         for item_by_year in combine_sheet.values:
             if item_by_year[0] != '创建时间':
                 if item_by_year[0].strftime("%Y") == name:
                     ws.append(item_by_year)
         # 存储相应年份的数据文件
-        wb_temp.save('{}.xlsx'.fromat(name))
+        wb_temp.save('{}.xlsx'.format(name))
+
 
 # 执行
 if __name__ == '__main__':

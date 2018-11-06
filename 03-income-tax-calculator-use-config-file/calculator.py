@@ -1,259 +1,278 @@
-""" 计算社保和个人所得税
-
-步骤：解析参数 -> 读取社保配置文件 -> 读取员工数据 -> 计算 -> 输出
-
-每一个步骤都实现为相应的类，通过类实例完成相应的工作。
-
-执行方式:
-
-    python3 calculator.py  -c test.cfg -d user.csv -o gongzi.csv
-
-"""
-
+# -*- coding: utf-8 -*-
 import sys
+import csv
+from collections import namedtuple
+
+# 税率表条目类，该类由 namedtuple 动态创建，代表一个命名元组
+IncomeTaxQuickLookupItem = namedtuple(
+    'IncomeTaxQuickLookupItem',
+    ['start_point', 'tax_rate', 'quick_subtractor']
+)
+
+# 起征点常量
+INCOME_TAX_START_POINT = 3500
+
+# 税率表，里面的元素类型为前面创建的 IncomeTaxQuickLookupItem
+INCOME_TAX_QUICK_LOOKUP_TABLE = [
+    IncomeTaxQuickLookupItem(80000, 0.45, 13505),
+    IncomeTaxQuickLookupItem(55000, 0.35, 5505),
+    IncomeTaxQuickLookupItem(35000, 0.30, 2755),
+    IncomeTaxQuickLookupItem(9000, 0.25, 1005),
+    IncomeTaxQuickLookupItem(4500, 0.2, 555),
+    IncomeTaxQuickLookupItem(1500, 0.1, 105),
+    IncomeTaxQuickLookupItem(0, 0.03, 0)
+]
 
 
-class ArgError(Exception):
-    pass
-
-
-class Args:
-    """命令行参数解析类
+class Args(object):
     """
-    def __init__(self, args):
-        """
-        Args:
-            args (list): 参数列表
-        """
-        self.args = args
+    命令行参数处理类
+    """
 
-    def __parse_arg(self, arg):
+    def __init__(self):
+        # 保存命令行参数列表
+        self.args = sys.argv[1:]
+
+    def _value_after_option(self, option):
+        """
+        内部函数，用来获取跟在选项后面的值
+        """
+
         try:
-            # 通过索引获取相应的参数的值
-            value = self.args[self.args.index(arg) + 1]
+            # 获得选项位置
+            index = self.args.index(option)
+            # 下一位置即为选项值
+            return self.args[index + 1]
         except (ValueError, IndexError):
-            value = None
-        return value
+            print('Parameter Error')
+            exit()
 
-    def get_arg(self, arg):
-        """获取指定参数的值
+    @property
+    def config_path(self):
         """
-        value = self.__parse_arg(arg)
-        if value is None:
-            raise ArgError('not found arg %s' % arg)
-        return value
+        配置文件路径
+        """
+
+        return self._value_after_option('-c')
+
+    @property
+    def userdata_path(self):
+        """
+        用户工资文件路径
+        """
+
+        return self._value_after_option('-d')
+
+    @property
+    def export_path(self):
+        """
+        税后工资文件路径
+        """
+
+        return self._value_after_option('-o')
 
 
-class SheBaoConfig:
-    """社保配置文件类
+# 创建一个全局参数类对象供后续使用
+args = Args()
+
+
+class Config(object):
     """
-    def __init__(self, file):
+    配置文件处理类
+    """
+
+    def __init__(self):
+        # 读取配置文件
+        self.config = self._read_config()
+
+    def _read_config(self):
         """
-        Args:
-            file (str): 社保配置文件
+        内部函数，用来读取配置文件中的配置项
         """
 
-        self.jishu_low, self.jishu_high, self.total_rate = self.__parse_config(file)
-
-    def __parse_config(self, file):
-        """解析社保参数配置文件
-        """
-        rate = 0
-        jishu_low = 0
-        jishu_high = 0
-
-        with open(file) as f:
-            for line in f:
-                key,  value = line.split('=')
-                key = key.strip()
+        config = {}
+        with open(args.config_path) as f:
+            # 依次读取配置文件里的每一行并解析得到配置项名称和值
+            for line in f.readlines():
+                key, value = line.strip().split('=')
                 try:
-                    value = float(value.strip())
+                    # 去掉前后可能出现的空格
+                    config[key.strip()] = float(value.strip())
                 except ValueError:
-                    continue
-                if key == 'JiShuL':
-                    jishu_low = value
-                elif key == 'JiShuH':
-                    jishu_high = value
-                else:
-                    rate += value
-        return jishu_low, jishu_high, rate
+                    print('Parameter Error')
+                    exit()
+
+        return config
+
+    def _get_config(self, key):
+        """
+        内部函数，用来获得配置项的值
+        """
+
+        try:
+            return self.config[key]
+        except KeyError:
+            print('Config Error')
+            exit()
+
+    @property
+    def social_insurance_baseline_low(self):
+        """
+        获取社保基数下限
+        """
+
+        return self._get_config('JiShuL')
+
+    @property
+    def social_insurance_baseline_high(self):
+        """
+        获取社保基数上限
+        """
+
+        return self._get_config('JiShuH')
+
+    @property
+    def social_insurance_total_rate(self):
+        """
+        获取社保总费率
+        """
+
+        return sum([
+            self._get_config('YangLao'),
+            self._get_config('YiLiao'),
+            self._get_config('ShiYe'),
+            self._get_config('GongShang'),
+            self._get_config('ShengYu'),
+            self._get_config('GongJiJin')
+        ])
 
 
-class EmployeeData:
-    """员工数据实现类
+# 创建一个全局的配置文件处理对象供后续使用
+config = Config()
+
+
+class UserData(object):
     """
-    def __init__(self, file):
-        """
-        Args:
-            file (str): 员工数据文件
-        """
-        self.data = self.__parse_file(file)
+    用户工资文件处理类
+    """
 
-    def __parse_file(self, file):
-        """解析员工数据文件
+    def __init__(self):
+        # 读取用户工资文件
+        self.userdata = self._read_users_data()
+
+    def _read_users_data(self):
         """
-        data = []
-        for line in open(file):
-            employee_id, gongzi = line.split(',')
-            data.append((int(employee_id), int(gongzi)))
-        return data
+        内部函数，用来读取用户工资文件
+        """
+
+        userdata = []
+        with open(args.userdata_path) as f:
+            # 依次读取用户工资文件中的每一行并解析得到用户 ID 和工资
+            for line in f.readlines():
+                employee_id, income_string = line.strip().split(',')
+                try:
+                    income = int(income_string)
+                except ValueError:
+                    print('Parameter Error')
+                    exit()
+                userdata.append((employee_id, income))
+
+        return userdata
 
     def __iter__(self):
-        """EmployeeData 实例可以像迭代器一样使用，如下面的代码
-
-            data = EmployeeData('user.csv')
-            for item in data:
-                print(item)
         """
-        return iter(self.data)
+        实现 __iter__ 方法，使得 UserData 对象成为可迭代对象。
+        """
+
+        # 直接返回属性 userdata 列表对象的迭代器
+        return iter(self.userdata)
 
 
-class Calculator:
-    """社保，个人所得税计算实现类
-
-    计算方法:
-
-    应纳税所得额 = 工资金额 － 各项社会保险费 - 起征点(3500元)
-    应纳税额 = 应纳税所得额 × 税率 － 速算扣除数
-    最终工资 = 工资金额 - 各项社会保险费 - 应纳税额
-
-    个人所得税税率因应纳税所得额不同而不同，具体可以查询税率速查表得知。
+class IncomeTaxCalculator(object):
+    """
+    税后工资计算类
     """
 
-    # 个人所得税起征点
-    tax_start = 3500
+    def __init__(self, userdata):
+        # 初始化时接收一个 UserData 对象
+        self.userdata = userdata
 
-    # 个人所得税税率速查表
-    # 列表中每一项为元组，包含三项数据: (应纳税额, 税率，速算扣除数)
-    tax_table = [
-        (80000, 0.45, 13505),
-        (55000, 0.35, 5505),
-        (35000, 0.3, 2755),
-        (9000, 0.25, 1005),
-        (4500, 0.2, 555),
-        (1500, 0.1, 105),
-        (0, 0.03, 0),
-    ]
-
-    def __init__(self, config):
+    @staticmethod
+    def calc_social_insurance_money(income):
         """
-        Args:
-            config (object): SheBaoConfig 实例
-        """
-        self.config = config
-
-    def calculate(self, data_item):
-        """
-        Args:
-            data_item (tuple):  有员工号和工资组成的元组，如 (101, 5000)
+        计算社保金额
         """
 
-        employee_id, gongzi = data_item
+        if income < config.social_insurance_baseline_low:
+            return config.social_insurance_baseline_low * \
+                config.social_insurance_total_rate
+        elif income > config.social_insurance_baseline_high:
+            return config.social_insurance_baseline_high * \
+                config.social_insurance_total_rate
+        else:
+            return income * config.social_insurance_total_rate
+
+    @classmethod
+    def calc_income_tax_and_remain(cls, income):
+        """
+        计算税后工资
+        """
 
         # 计算社保金额
-        if gongzi < self.config.jishu_low:
-            shebao = self.config.jishu_low * self.config.total_rate
-        elif gongzi > self.config.jishu_high:
-            shebao = self.config.jishu_high * self.config.total_rate
-        else:
-            shebao = gongzi * self.config.total_rate
+        social_insurance_money = cls.calc_social_insurance_money(income)
 
-        # 工资减去社保后的剩余金额
-        left_gongzi = gongzi - shebao
+        # 计算应纳税额
+        real_income = income - social_insurance_money
+        taxable_part = real_income - INCOME_TAX_START_POINT
 
-        # 应纳税所得额 = 工资 - 社保 - 起征点
-        tax_gongzi = left_gongzi - self.tax_start
+        # 从高到低判断落入的税率区间，如果找到则用该区间的参数计算纳税额并返回结果
+        for item in INCOME_TAX_QUICK_LOOKUP_TABLE:
+            if taxable_part > item.start_point:
+                tax = taxable_part * item.tax_rate - item.quick_subtractor
+                return '{:.2f}'.format(tax), '{:.2f}'.format(real_income - tax)
 
-        # 如果应纳税所得额 小于 0，那么就不用缴纳个人所得税
-        if tax_gongzi < 0:
-            tax = 0
-        else:
-            # 否则查询税率速查表计算应该缴纳的个人所得税税额
-            # item 包含三项数据，(应纳税额, 税率，速算扣除数)
-            for item in self.tax_table:
-                if tax_gongzi > item[0]:
-                    tax = tax_gongzi * item[1] - item[2]
-                    break
+        # 如果没有落入任何区间，则返回 0
+        return '0.00', '{:.2f}'.format(real_income)
 
-        # 最终工资 = 工资 - 社保 - 个人所得税
-        last_gongzi = left_gongzi - tax
-
-        return str(employee_id), str(gongzi), '{:.2f}'.format(shebao), '{:.2f}'.format(tax), '{:.2f}'.format(last_gongzi)
-
-
-class Exporter:
-    """导出类实现
-    """
-    def __init__(self, file):
+    def calc_for_all_userdata(self):
         """
-        Args:
-            file (str): 需要导出的目标文件
-        """
-        self.file = file
-
-    def export(self, data):
-        """
-        Args:
-            data (list): data 是一个由元组组成的列表，元组每一项应为字符串
-        """
-        content = ''
-
-        # 拼接内容
-        for item in data:
-            line = ','.join(item) + '\n'
-            content += line
-
-        # 写入文件
-        with open(self.file, 'w') as f:
-            f.write(content)
-
-
-class Executor:
-    """执行器实现
-
-    该执行器会调用各个类来实现税额计算功能
-    """
-
-    def __init__(self, args):
-        """
-        Args:
-            args (list): 参数列表
-        """
-        args = Args(args)
-        config = SheBaoConfig(args.get_arg('-c'))
-        self.employee_data = EmployeeData(args.get_arg('-d'))
-        self.exporter = Exporter(args.get_arg('-o'))
-        self.calculator = Calculator(config)
-
-    def execute(self):
-        """执行
+        计算所有用户的税后工资
         """
 
-        results = []
+        result = []
+        # 循环计算每一个用户的税后工资，并将结果汇总到结果集中
+        for employee_id, income in self.userdata:
+            # 计算社保金额
+            social_insurance_money = '{:.2f}'.format(
+                self.calc_social_insurance_money(income))
 
-        # 遍历员工数据，并计算每一个员工的税额，并将结果保存在 results 中
-        for item in self.employee_data:
-            result = self.calculator.calculate(item)
-            results.append(result)
+            # 计算税后工资
+            tax, remain = self.calc_income_tax_and_remain(income)
 
-        # 通过调用 exporter 来导出所有的数据
-        self.exporter.export(results)
+            # 添加到结果集
+            result.append(
+                [employee_id, income, social_insurance_money, tax, remain])
+
+        return result
+
+    def export(self):
+        """
+        导出所有用户的税后工资到文件
+        """
+
+        # 计算所有用户的税后工资
+        result = self.calc_for_all_userdata()
+
+        with open(args.export_path, 'w', newline='') as f:
+            # 创建 csv 文件写入对象
+            writer = csv.writer(f)
+            # 写入多行数据
+            writer.writerows(result)
 
 
 if __name__ == '__main__':
-    executor = Executor(sys.argv[1:])
-    executor.execute()
+    # 创建税后工资计算器
+    calculator = IncomeTaxCalculator(UserData())
 
-    # 除了使用 Executor 来执行代码，也可以直接使用下面的代码
-    # args = Args(sys.argv[1:])
-    # config = SheBaoConfig(args.get_arg('-c'))
-    # employee_data = EmployeeData(args.get_arg('-d'))
-    # exporter = Exporter(args.get_arg('-o'))
-    # calculator = Calculator(config)
-
-    # results = []
-    # for item in employee_data:
-    #     result = calculator.calculate(item)
-    #     results.append(result)
-    # exporter.export(results)
-
+    # 调用 export 方法导出税后工资到文件
+    calculator.export()
